@@ -15,42 +15,17 @@ from groq import Groq
 # =======================
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY")
+
+if not GROQ_API_KEY:
+    st.error("❌ GROQ API KEY missing")
+    st.stop()
+
 client = Groq(api_key=GROQ_API_KEY)
 
 # =======================
 # UI CONFIG
 # =======================
 st.set_page_config(page_title="NoteBot AI", page_icon="🤖", layout="wide")
-
-st.markdown("""
-<style>
-.main {
-    background: linear-gradient(135deg, #0E1117, #1a1c24);
-    color: white;
-}
-.chat-box {
-    padding: 14px;
-    border-radius: 15px;
-    margin-bottom: 12px;
-    max-width: 75%;
-    font-size: 15px;
-}
-.user {
-    background: linear-gradient(135deg, #1f77b4, #4facfe);
-    margin-left: auto;
-}
-.bot {
-    background: rgba(255,255,255,0.05);
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(255,255,255,0.1);
-}
-.stButton>button {
-    border-radius: 10px;
-    background: linear-gradient(135deg, #1f77b4, #4facfe);
-    color: white;
-}
-</style>
-""", unsafe_allow_html=True)
 
 st.title("🤖 NoteBot AI – RAG Based PDF Assistant")
 st.caption("Built using Generative AI, RAG & Vector Search")
@@ -86,8 +61,6 @@ with st.sidebar:
 
     if files:
         st.success(f"{len(files)} PDF(s) uploaded")
-        for f in files:
-            st.write(f"📄 {f.name}")
 
     k = st.slider("Accuracy Control (Top-K)", 1, 10, 5)
 
@@ -96,16 +69,18 @@ with st.sidebar:
         "Choose",
         ["Ask Question", "Summarize PDF", "Important Points", "Notes", "Questions", "Explain Simple"]
     )
+
     if st.button("Clear Chat"):
         st.session_state.chat_history = []
         st.rerun()
-    
+
     if st.button("Reset Chat"):
         st.session_state.chat_history = []
         st.session_state.vector_store = None
+        st.rerun()
 
 # =======================
-# SESSION
+# SESSION STATE
 # =======================
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
@@ -114,7 +89,7 @@ if "vector_store" not in st.session_state:
     st.session_state.vector_store = None
 
 # =======================
-# PROCESS PDF
+# PDF PROCESSING
 # =======================
 if files and st.session_state.vector_store is None:
 
@@ -122,20 +97,48 @@ if files and st.session_state.vector_store is None:
 
     for file in files:
         pdf = PdfReader(file)
+
         for page in pdf.pages:
-            if page.extract_text():
-                text += page.extract_text()
+            try:
+                content = page.extract_text()
+                if content:
+                    text += content
+            except:
+                pass
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
-    chunks = splitter.split_text(text)
+    # 🚨 Check if text extracted
+    if not text.strip():
+        st.error("❌ No readable text found in PDF.\n👉 Try a text-based PDF (not scanned).")
+        st.stop()
 
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=500,
+        chunk_overlap=100
     )
 
-    st.session_state.vector_store = FAISS.from_texts(chunks, embeddings)
+    chunks = splitter.split_text(text)
 
-    st.success("PDF Ready!")
+    # 🚨 Check chunks
+    if not chunks:
+        st.error("❌ Failed to split text into chunks.")
+        st.stop()
+
+    # DEBUG (optional)
+    st.write(f"📄 Text length: {len(text)}")
+    st.write(f"🧩 Chunks created: {len(chunks)}")
+
+    try:
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        )
+
+        st.session_state.vector_store = FAISS.from_texts(chunks, embeddings)
+
+    except Exception as e:
+        st.error(f"❌ Embedding error: {e}")
+        st.stop()
+
+    st.success("✅ PDF Ready!")
 
 # =======================
 # INPUT
@@ -155,16 +158,18 @@ if (query or study_mode != "Ask Question") and st.session_state.vector_store:
 
     if study_mode == "Ask Question":
 
-        # 🔥 Savage filter
         if detect_unfair_query(query):
             answer = savage_reply()
             st.session_state.chat_history.append(("bot", answer))
-            st.markdown(f'<div class="chat-box bot"><b>{answer}</b></div>', unsafe_allow_html=True)
+            st.markdown(f"**🤖 {answer}**")
             st.stop()
 
         st.session_state.chat_history.append(("user", query))
 
-    docs = st.session_state.vector_store.similarity_search(query if query else "summary", k=k)
+    docs = st.session_state.vector_store.similarity_search(
+        query if query else "summary",
+        k=k
+    )
 
     context = "\n\n".join([d.page_content for d in docs])
 
@@ -201,28 +206,32 @@ Question:
     # =======================
     # LLM CALL
     # =======================
-    response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[{"role": "user", "content": prompt}]
-    )
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": prompt}]
+        )
 
-    answer = response.choices[0].message.content
+        answer = response.choices[0].message.content
+
+    except Exception as e:
+        answer = f"❌ LLM Error: {e}"
 
     st.session_state.chat_history.append(("bot", answer))
 
-    st.markdown(f'<div class="chat-box bot">{answer}</div>', unsafe_allow_html=True)
+    st.markdown(f"**🤖 {answer}**")
 
     st.download_button("Download Answer", answer)
 
-    with st.expander("Source"):
+    with st.expander("📚 Source"):
         for d in docs[:2]:
             st.write(d.page_content)
 
 # =======================
-# DISPLAY CHAT
+# CHAT DISPLAY
 # =======================
 for role, msg in st.session_state.chat_history:
     if role == "user":
-        st.markdown(f'<div class="chat-box user">{msg}</div>', unsafe_allow_html=True)
+        st.markdown(f"**🧑 {msg}**")
     else:
-        st.markdown(f'<div class="chat-box bot">{msg}</div>', unsafe_allow_html=True)
+        st.markdown(f"**🤖 {msg}**")
