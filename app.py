@@ -27,11 +27,11 @@ client = Groq(api_key=GROQ_API_KEY)
 # =======================
 st.set_page_config(page_title="NoteBot AI", page_icon="🤖", layout="wide")
 
-st.title("🤖 NoteBot AI – RAG Based PDF Assistant")
-st.caption("Built using Generative AI, RAG & Vector Search")
+st.title("🤖 NoteBot AI – Smart AI Assistant")
+st.caption("RAG + General AI + Study Modes")
 
 # =======================
-# SAFETY (SAVAGE MODE)
+# SAFETY
 # =======================
 def detect_unfair_query(query):
     keywords = [
@@ -97,7 +97,6 @@ if files and st.session_state.vector_store is None:
 
     for file in files:
         pdf = PdfReader(file)
-
         for page in pdf.pages:
             try:
                 content = page.extract_text()
@@ -107,160 +106,110 @@ if files and st.session_state.vector_store is None:
                 pass
 
     if not text.strip():
-        st.error("❌ No readable text found in PDF.\n👉 Try a text-based PDF.")
+        st.error("❌ No readable text found in PDF.")
         st.stop()
 
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
     chunks = splitter.split_text(text)
 
-    if not chunks:
-        st.error("❌ Failed to split text into chunks.")
-        st.stop()
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
 
-    st.write(f"📄 Text length: {len(text)}")
-    st.write(f"🧩 Chunks created: {len(chunks)}")
-
-    try:
-        embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2"
-        )
-        st.session_state.vector_store = FAISS.from_texts(chunks, embeddings)
-    except Exception as e:
-        st.error(f"❌ Embedding error: {e}")
-        st.stop()
-
+    st.session_state.vector_store = FAISS.from_texts(chunks, embeddings)
     st.success("✅ PDF Ready!")
 
 # =======================
-# OLD INPUT (UNCHANGED)
+# 💬 SINGLE SMART CHAT INPUT
 # =======================
-query = None
+user_query = st.chat_input("Ask anything (PDF / General / Study)...")
 
-if study_mode == "Ask Question":
-    query = st.chat_input("Ask your question...")
-else:
-    if st.button("Run"):
-        query = "RUN"
+if user_query:
 
-# =======================
-# MAIN RAG LOGIC
-# =======================
-if (query or study_mode != "Ask Question") and st.session_state.vector_store:
+    # Show user
+    with st.chat_message("user"):
+        st.markdown(user_query)
 
-    if study_mode == "Ask Question":
-        if detect_unfair_query(query):
-            answer = savage_reply()
-            st.session_state.chat_history.append(("bot", answer))
-            st.markdown(f"**🤖 {answer}**")
-            st.stop()
-
-        st.session_state.chat_history.append(("user", query))
-
-    docs = st.session_state.vector_store.similarity_search(
-        query if query else "summary",
-        k=k
-    )
-
-    context = "\n\n".join([d.page_content for d in docs])
-
-    if study_mode == "Summarize PDF":
-        prompt = f"Summarize clearly:\n{context}"
-
-    elif study_mode == "Important Points":
-        prompt = f"Give key important points:\n{context}"
-
-    elif study_mode == "Notes":
-        prompt = f"Make exam notes:\n{context}"
-
-    elif study_mode == "Questions":
-        prompt = f"Generate exam questions:\n{context}"
-
-    elif study_mode == "Explain Simple":
-        prompt = f"Explain simply:\n{context}"
+    # Savage check
+    if detect_unfair_query(user_query):
+        answer = savage_reply()
 
     else:
-        prompt = f"""
-You are an intelligent study assistant.
+        try:
+            # =======================
+            # CASE 1: PDF AVAILABLE → RAG
+            # =======================
+            if st.session_state.vector_store:
 
-1. Use PDF context first.
-2. If not enough, answer using general knowledge.
-3. Mention source: "From PDF" or "General Knowledge".
-4. Keep it simple for exams.
+                docs = st.session_state.vector_store.similarity_search(user_query, k=k)
+                context = "\n\n".join([d.page_content for d in docs])
+
+                # Study modes
+                if study_mode == "Summarize PDF":
+                    prompt = f"Summarize clearly:\n{context}"
+
+                elif study_mode == "Important Points":
+                    prompt = f"Give key important points:\n{context}"
+
+                elif study_mode == "Notes":
+                    prompt = f"Make exam notes:\n{context}"
+
+                elif study_mode == "Questions":
+                    prompt = f"Generate exam questions:\n{context}"
+
+                elif study_mode == "Explain Simple":
+                    prompt = f"Explain simply:\n{context}"
+
+                else:
+                    prompt = f"""
+Use PDF context first. If insufficient, use general knowledge.
 
 Context:
 {context}
 
 Question:
-{query}
+{user_query}
 """
 
-    try:
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            temperature=0.7,
-            max_tokens=1024,
-            top_p=0.9,
-            messages=[
-                {"role": "system", "content": "You are a smart study assistant."},
-                {"role": "user", "content": prompt}
-            ]
-        )
+                response = client.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    temperature=0.7,
+                    max_tokens=1024,
+                    top_p=0.9,
+                    messages=[
+                        {"role": "system", "content": "You are a smart study assistant."},
+                        {"role": "user", "content": prompt}
+                    ]
+                )
 
-        answer = response.choices[0].message.content
+                answer = response.choices[0].message.content
 
-        if "i don't know" in answer.lower():
-            fallback = client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                temperature=0.7,
-                messages=[{"role": "user", "content": f"Explain simply:\n{query}"}]
-            )
-            answer = "General Knowledge:\n" + fallback.choices[0].message.content
+            # =======================
+            # CASE 2: NO PDF → GENERAL AI
+            # =======================
+            else:
+                response = client.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    temperature=0.7,
+                    max_tokens=1024,
+                    top_p=0.9,
+                    messages=[
+                        {"role": "system", "content": "You are a helpful AI assistant."},
+                        {"role": "user", "content": user_query}
+                    ]
+                )
 
-    except Exception as e:
-        answer = f"❌ Error: {e}"
+                answer = response.choices[0].message.content
 
-    st.session_state.chat_history.append(("bot", answer))
-    st.markdown(f"**🤖 {answer}**")
+        except Exception as e:
+            answer = f"❌ Error: {e}"
 
-    st.download_button("Download Answer", answer)
-
-    with st.expander("📚 Source"):
-        for d in docs[:2]:
-            st.write(d.page_content)
-
-# =======================
-# 🌐 GENERAL CHATBOT (NO PDF)
-# =======================
-st.markdown("### 🌐 General AI Chat (No PDF Needed)")
-
-general_query = st.chat_input("Ask anything...")
-
-if general_query:
-
-    with st.chat_message("user"):
-        st.markdown(general_query)
-
-    try:
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            temperature=0.7,
-            max_tokens=1024,
-            top_p=0.9,
-            messages=[
-                {"role": "system", "content": "You are a helpful AI assistant."},
-                {"role": "user", "content": general_query}
-            ]
-        )
-
-        answer = response.choices[0].message.content
-
-    except Exception as e:
-        answer = f"❌ Error: {e}"
-
+    # Show assistant
     with st.chat_message("assistant"):
         st.markdown(answer)
 
-    st.session_state.chat_history.append(("user", general_query))
+    # Save history
+    st.session_state.chat_history.append(("user", user_query))
     st.session_state.chat_history.append(("bot", answer))
 
 # =======================
@@ -268,6 +217,8 @@ if general_query:
 # =======================
 for role, msg in st.session_state.chat_history:
     if role == "user":
-        st.markdown(f"**🧑 {msg}**")
+        with st.chat_message("user"):
+            st.markdown(msg)
     else:
-        st.markdown(f"**🤖 {msg}**")
+        with st.chat_message("assistant"):
+            st.markdown(msg)
