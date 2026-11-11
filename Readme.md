@@ -154,8 +154,8 @@ Embeddings
 📱 Mobile UI optimization
 📌 Author
 
-👨‍💻 Supratik Mitra
-B.Tech CSE (AI & ML)
+👨‍💻 Suvasis Das
+B.Tech CSE 
 
 ⭐ Support
 
